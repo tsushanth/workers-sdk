@@ -2,16 +2,14 @@ import { blue, bold, green, grey, red, reset, yellow } from "kleur/colors";
 import { HttpError, LogLevel, SharedHeaders } from "miniflare:shared";
 import { isCompressedByCloudflareFL } from "../../shared/mime-types";
 import { CoreBindings, CoreHeaders, CorePaths } from "./constants";
-import { handleEmail } from "./email";
 import { STATUS_CODES } from "./http";
 import { matchRoutes } from "./routing";
-import { handleScheduled } from "./scheduled";
 import type { WorkerRoute } from "./routing";
 import type { Colorize } from "kleur/colors";
 
 type Env = {
 	[CoreBindings.SERVICE_LOOPBACK]: Fetcher;
-	[CoreBindings.SERVICE_USER_FALLBACK]: Fetcher;
+	[CoreBindings.SERVICE_INGRESS_FALLBACK]: Fetcher;
 	[CoreBindings.SERVICE_LOCAL_EXPLORER]: Fetcher;
 	[CoreBindings.SERVICE_STREAM]?: Fetcher;
 	[CoreBindings.SERVICE_IMAGES_DELIVERY]?: Fetcher;
@@ -23,11 +21,10 @@ type Env = {
 	[CoreBindings.DATA_LIVE_RELOAD_SCRIPT]?: ArrayBuffer;
 	[CoreBindings.DURABLE_OBJECT_NAMESPACE_PROXY]: DurableObjectNamespace;
 	[CoreBindings.DATA_PROXY_SHARED_SECRET]?: ArrayBuffer;
-	[CoreBindings.TRIGGER_HANDLERS]: boolean;
 	[CoreBindings.LOG_REQUESTS]: boolean;
 	[CoreBindings.STRIP_DISABLE_PRETTY_ERROR]: boolean;
 } & {
-	[K in `${typeof CoreBindings.SERVICE_USER_ROUTE_PREFIX}${string}`]:
+	[K in `${typeof CoreBindings.SERVICE_INGRESS_ROUTE_PREFIX}${string}`]:
 		| Fetcher
 		| undefined; // Won't have a `Fetcher` for every possible `string`
 };
@@ -46,7 +43,7 @@ function getUserRequest(
 	// This is relevant here in the case that a Miniflare implemented Proxy Worker is
 	// sitting in front of this User Worker, which is hosted on a different URL.
 	const originalUrl = request.headers.get(CoreHeaders.ORIGINAL_URL);
-	let url = new URL(originalUrl ?? request.url);
+	const url = new URL(originalUrl ?? request.url);
 
 	let rewriteHeadersFromOriginalUrl = false;
 
@@ -69,19 +66,6 @@ function getUserRequest(
 				`Disallowed header in request: ${CoreHeaders.PROXY_SHARED_SECRET}=${proxySharedSecret}`
 			);
 		}
-	}
-
-	// If Miniflare was configured with `upstream`, then we use this to override the url and host in the request.
-	const upstreamUrl = env[CoreBindings.TEXT_UPSTREAM_URL];
-	// Store the original hostname before it gets rewritten by upstream
-	const originalHostname = upstreamUrl !== undefined ? url.host : undefined;
-	if (upstreamUrl !== undefined) {
-		// If a custom `upstream` was specified, make sure the URL starts with it
-		let path = url.pathname + url.search;
-		// Remove leading slash, so we resolve relative to `upstream`'s path
-		if (path.startsWith("/")) path = `./${path.substring(1)}`;
-		url = new URL(path, upstreamUrl);
-		rewriteHeadersFromOriginalUrl = true;
 	}
 
 	// Note when constructing new `Request`s from `request`, we must always pass
@@ -108,12 +92,6 @@ function getUserRequest(
 		request.headers.set("Host", url.host);
 	}
 
-	// Set the original hostname header when using upstream, so Workers can
-	// access the original hostname even after the Host header is rewritten
-	if (originalHostname !== undefined) {
-		request.headers.set(CoreHeaders.ORIGINAL_HOSTNAME, originalHostname);
-	}
-
 	if (clientIp && !request.headers.get("CF-Connecting-IP")) {
 		const ipv4Regex = /(?<ip>.*?):\d+/;
 		const ipv6Regex = /\[(?<ip>.*?)\]:\d+/;
@@ -135,14 +113,14 @@ function getUserRequest(
 }
 
 function getTargetService(request: Request, url: URL, env: Env) {
-	let service: Fetcher | undefined = env[CoreBindings.SERVICE_USER_FALLBACK];
+	let service: Fetcher | undefined = env[CoreBindings.SERVICE_INGRESS_FALLBACK];
 
 	const override = request.headers.get(CoreHeaders.ROUTE_OVERRIDE);
 	request.headers.delete(CoreHeaders.ROUTE_OVERRIDE);
 
 	const route = override ?? matchRoutes(env[CoreBindings.JSON_ROUTES], url);
 	if (route !== null) {
-		service = env[`${CoreBindings.SERVICE_USER_ROUTE_PREFIX}${route}`];
+		service = env[`${CoreBindings.SERVICE_INGRESS_ROUTE_PREFIX}${route}`];
 	}
 	return service;
 }
@@ -472,7 +450,6 @@ function handleProxy(request: Request, env: Env) {
 export default <ExportedHandler<Env>>{
 	async fetch(request, env, ctx) {
 		const startTime = Date.now();
-
 		const clientIp = request.cf?.clientIp as string;
 
 		// Parse this manually (rather than using the `cfBlobHeader` config property in workerd to parse it into request.cf)
@@ -495,6 +472,7 @@ export default <ExportedHandler<Env>>{
 		// This must happen before getUserRequest() so we validate the
 		// original browser-sent headers, not Miniflare-rewritten ones.
 		const requestUrl = new URL(request.url);
+
 		try {
 			validateCdnCgiRequest(
 				request,
@@ -556,46 +534,6 @@ export default <ExportedHandler<Env>>{
 			) {
 				return await imagesDelivery.fetch(request);
 			}
-			if (env[CoreBindings.TRIGGER_HANDLERS]) {
-				if (
-					url.pathname === CorePaths.SCHEDULED ||
-					/* legacy URL path */ url.pathname === CorePaths.LEGACY_SCHEDULED
-				) {
-					if (url.pathname === CorePaths.LEGACY_SCHEDULED) {
-						ctx.waitUntil(
-							env[CoreBindings.SERVICE_LOOPBACK].fetch(
-								"http://localhost/core/log",
-								{
-									method: "POST",
-									headers: {
-										[SharedHeaders.LOG_LEVEL]: LogLevel.WARN.toString(),
-									},
-									body: `Triggering scheduled handlers via a request to \`${CorePaths.LEGACY_SCHEDULED}\` is deprecated, and will be removed in a future version of Miniflare. Instead, send a request to \`${CorePaths.SCHEDULED}\``,
-								}
-							)
-						);
-					}
-					return await handleScheduled(url.searchParams, service);
-				}
-
-				if (url.pathname === CorePaths.EMAIL) {
-					return await handleEmail(
-						url.searchParams,
-						request,
-						service,
-						env,
-						ctx
-					);
-				}
-
-				if (url.pathname.startsWith(CorePaths.HANDLER_PREFIX)) {
-					return new Response(
-						`"${url.pathname}" is not a valid handler. Did you mean to use "${CorePaths.SCHEDULED}" or "${CorePaths.EMAIL}"?`,
-						{ status: 404 }
-					);
-				}
-			}
-
 			const streamService = env[CoreBindings.SERVICE_STREAM];
 			if (
 				(url.pathname === CorePaths.STREAM_VIDEO ||

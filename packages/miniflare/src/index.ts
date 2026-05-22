@@ -62,11 +62,11 @@ import {
 	STREAM_PLUGIN_NAME,
 	WORKFLOWS_PLUGIN_NAME,
 } from "./plugins";
-import { RPC_PROXY_SERVICE_NAME } from "./plugins/assets/constants";
 import { BROWSER_VERSION } from "./plugins/browser-rendering/browser-version";
 import {
 	CUSTOM_SERVICE_KNOWN_OUTBOUND,
 	CustomServiceKind,
+	getIngressServiceName,
 	getUserServiceName,
 	handlePrettyErrorRequest,
 	JsonErrorSchema,
@@ -2069,18 +2069,11 @@ export class Miniflare {
 								""
 							);
 
-							/*
-							 * If we are running multiple Workers in a single dev session,
-							 * and this is a binding to a Worker with assets, we want that
-							 * binding to point to the (assets) RPC Proxy Worker
-							 */
-							const maybeAssetTargetService = allWorkerOpts.find(
-								(worker) =>
-									worker.core.name === targetWorkerName && worker.assets.assets
-							);
-							if (maybeAssetTargetService && !binding.service?.entrypoint) {
-								assert(binding.service?.name);
-								binding.service.name = `${RPC_PROXY_SERVICE_NAME}:${targetWorkerName}`;
+							if (
+								binding.service !== undefined &&
+								!binding.service.entrypoint
+							) {
+								binding.service.name = getIngressServiceName(targetWorkerName);
 							}
 						}
 					}
@@ -2172,16 +2165,12 @@ export class Miniflare {
 					directSocket.host,
 					directSocket.port
 				);
-				// check if Worker with assets with default export
-				// (class or non-class based)
 				const service =
-					workerOpts.assets.assets && entrypoint === "default"
-						? {
-								name: `${RPC_PROXY_SERVICE_NAME}:${workerOpts.core.name}`,
-							}
+					entrypoint === "default"
+						? { name: getIngressServiceName(serviceName) }
 						: {
 								name: getUserServiceName(serviceName),
-								entrypoint: entrypoint === "default" ? undefined : entrypoint,
+								entrypoint,
 							};
 
 				sockets.push({
@@ -2306,20 +2295,7 @@ export class Miniflare {
 		const globalServices = getGlobalServices({
 			sharedOptions: sharedOpts.core,
 			allWorkerRoutes,
-			/*
-			 * - if Workers + Assets project but NOT Vitest, the fallback Worker (see
-			 *   `MINIFLARE_USER_FALLBACK`) should point to the (assets) RPC Proxy Worker
-			 * - if Vitest with assets, the fallback Worker should point to the Vitest
-			 *   runner Worker, while the SELF binding on the test runner will point to
-			 *   the (assets) RPC Proxy Worker
-			 */
-			fallbackWorkerName:
-				this.#workerOpts[0].assets.assets &&
-				!this.#workerOpts[0].core.name?.startsWith(
-					"vitest-pool-workers-runner-"
-				)
-					? `${RPC_PROXY_SERVICE_NAME}:${this.#workerOpts[0].core.name}`
-					: getUserServiceName(this.#workerOpts[0].core.name),
+			fallbackWorkerName: getIngressServiceName(this.#workerOpts[0].core.name),
 			loopbackPort,
 			tmpPath: this.#tmpPath,
 			log: this.#log,
@@ -2657,22 +2633,13 @@ export class Miniflare {
 				continue;
 			}
 
-			let defaultEntrypointService: string;
-			if (workerOpts.core.unsafeOverrideFetchWorker) {
-				defaultEntrypointService = getUserServiceName(
-					workerOpts.core.unsafeOverrideFetchWorker
-				);
-			} else if (workerOpts.assets.assets) {
-				defaultEntrypointService = `${RPC_PROXY_SERVICE_NAME}:${workerOpts.core.name}`;
-			} else {
-				defaultEntrypointService = getUserServiceName(workerOpts.core.name);
-			}
-
 			entries.push([
 				workerOpts.core.name,
 				{
 					debugPortAddress,
-					defaultEntrypointService,
+					defaultEntrypointService: workerOpts.core.unsafeOverrideFetchWorker
+						? getUserServiceName(workerOpts.core.unsafeOverrideFetchWorker)
+						: getIngressServiceName(workerOpts.core.name),
 					userWorkerService: getUserServiceName(workerOpts.core.name),
 				},
 			]);
@@ -2946,8 +2913,7 @@ export class Miniflare {
 		const workerOpts = this.#workerOpts[workerIndex];
 		workerName = workerOpts.core.name ?? "";
 
-		// Get a `Fetcher` to that worker (NOTE: the `ProxyServer` Durable Object
-		// shares its `env` with Miniflare's entry worker, so has access to routes)
+		// Get a `Fetcher` to the raw user worker.
 		const bindingName = CoreBindings.SERVICE_USER_ROUTE_PREFIX + workerName;
 
 		const fetcher = proxyClient.env[bindingName];
