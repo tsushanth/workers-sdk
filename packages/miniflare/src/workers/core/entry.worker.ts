@@ -543,6 +543,8 @@ export default <ExportedHandler<Env>>{
 				return await streamService.fetch(request);
 			}
 
+			request = new Request(request);
+			request.headers.set(CoreHeaders.APPLY_UPSTREAM, "true");
 			let response = await service.fetch(request);
 			if (!disablePrettyErrorPage) {
 				response = await maybePrettifyError(request, response, env);

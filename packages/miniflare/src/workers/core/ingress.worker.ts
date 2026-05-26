@@ -14,11 +14,13 @@ type Env = {
 
 function getUpstreamRequest(
 	request: Request<unknown, IncomingRequestCfProperties>,
-	env: Env
+	env: Env,
+	applyUpstream: boolean
 ) {
-	// If Miniflare was configured with `upstream`, then we use this to override the url and host in the request.
+	// Only entry-routed requests apply `upstream`; internal service binding calls
+	// still use ingress for default-entrypoint composition without changing origin.
 	const upstreamUrl = env[CoreBindings.TEXT_UPSTREAM_URL];
-	if (upstreamUrl === undefined) {
+	if (!applyUpstream || upstreamUrl === undefined) {
 		return request;
 	}
 
@@ -39,6 +41,9 @@ function getUpstreamRequest(
 export default class IngressWorker extends WorkerEntrypoint<Env> {
 	async fetch(request: Request<unknown, IncomingRequestCfProperties>) {
 		const env = this.env;
+		request = new Request(request);
+		const applyUpstream = request.headers.get(CoreHeaders.APPLY_UPSTREAM) !== null;
+		request.headers.delete(CoreHeaders.APPLY_UPSTREAM);
 		const url = new URL(request.url);
 		if (env[CoreBindings.TRIGGER_HANDLERS]) {
 			if (
@@ -85,7 +90,7 @@ export default class IngressWorker extends WorkerEntrypoint<Env> {
 		}
 
 		return env[CoreBindings.SERVICE_INGRESS_FETCH_TARGET].fetch(
-			getUpstreamRequest(request, env)
+			getUpstreamRequest(request, env, applyUpstream)
 		);
 	}
 

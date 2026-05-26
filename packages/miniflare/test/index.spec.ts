@@ -1446,6 +1446,138 @@ test("Miniflare: custom upstream sets MF-Original-Hostname header", async ({
 		originalHostname: "my-original-host.example.com:8080",
 	});
 });
+test("Miniflare: route-matched workers use their own upstream", async ({
+	expect,
+}) => {
+	const appUpstream = await useServer((req, res) => {
+		res.end(`app: ${req.headers.host}${req.url}`);
+	});
+	const apiUpstream = await useServer((req, res) => {
+		res.end(`api: ${req.headers.host}${req.url}`);
+	});
+	const mf = new Miniflare({
+		workers: [
+			{
+				name: "app",
+				routes: ["https://app.example/*"],
+				upstream: new URL("/app/", appUpstream.http.toString()).toString(),
+				modules: true,
+				script: `export default {
+					async fetch(request) {
+						const upstreamResponse = await fetch(request);
+						return Response.json({
+							url: request.url,
+							host: request.headers.get("Host"),
+							originalHostname: request.headers.get("MF-Original-Hostname"),
+							applyUpstream: request.headers.get("MF-Apply-Upstream"),
+							upstream: await upstreamResponse.text()
+						});
+					}
+				}`,
+			},
+			{
+				name: "api",
+				routes: ["https://api.example/*"],
+				upstream: new URL("/api/", apiUpstream.http.toString()).toString(),
+				modules: true,
+				script: `export default {
+					async fetch(request) {
+						const upstreamResponse = await fetch(request);
+						return Response.json({
+							url: request.url,
+							host: request.headers.get("Host"),
+							originalHostname: request.headers.get("MF-Original-Hostname"),
+							applyUpstream: request.headers.get("MF-Apply-Upstream"),
+							upstream: await upstreamResponse.text()
+						});
+					}
+				}`,
+			},
+		],
+	});
+	useDispose(mf);
+
+	const appResponse = await mf.dispatchFetch("https://app.example/path?a=1");
+	expect(await appResponse.json()).toEqual({
+		url: new URL("/app/path?a=1", appUpstream.http.toString()).toString(),
+		host: appUpstream.http.host,
+		originalHostname: "app.example",
+		applyUpstream: null,
+		upstream: `app: ${appUpstream.http.host}/app/path?a=1`,
+	});
+
+	const apiResponse = await mf.dispatchFetch("https://api.example/path?a=1");
+	expect(await apiResponse.json()).toEqual({
+		url: new URL("/api/path?a=1", apiUpstream.http.toString()).toString(),
+		host: apiUpstream.http.host,
+		originalHostname: "api.example",
+		applyUpstream: null,
+		upstream: `api: ${apiUpstream.http.host}/api/path?a=1`,
+	});
+});
+test("Miniflare: service binding does not apply target worker upstream", async ({
+	expect,
+}) => {
+	const aUpstream = await useServer((req, res) => {
+		res.end(`a: ${req.headers.host}${req.url}`);
+	});
+	const bUpstream = await useServer((req, res) => {
+		res.end(`b: ${req.headers.host}${req.url}`);
+	});
+	const mf = new Miniflare({
+		workers: [
+			{
+				name: "a",
+				routes: ["https://a.example/*"],
+				upstream: new URL("/a/", aUpstream.http.toString()).toString(),
+				serviceBindings: { B: "b" },
+				modules: true,
+				script: `export default {
+					async fetch(request, env) {
+						const bResponse = await env.B.fetch(request);
+						return Response.json({
+							url: request.url,
+							host: request.headers.get("Host"),
+							originalHostname: request.headers.get("MF-Original-Hostname"),
+							applyUpstream: request.headers.get("MF-Apply-Upstream"),
+							b: await bResponse.json()
+						});
+					}
+				}`,
+			},
+			{
+				name: "b",
+				upstream: new URL("/b/", bUpstream.http.toString()).toString(),
+				modules: true,
+				script: `export default {
+					async fetch(request) {
+						return Response.json({
+							url: request.url,
+							host: request.headers.get("Host"),
+							originalHostname: request.headers.get("MF-Original-Hostname"),
+							applyUpstream: request.headers.get("MF-Apply-Upstream")
+						});
+					}
+				}`,
+			},
+		],
+	});
+	useDispose(mf);
+
+	const response = await mf.dispatchFetch("https://a.example/path?a=1");
+	expect(await response.json()).toEqual({
+		url: new URL("/a/path?a=1", aUpstream.http.toString()).toString(),
+		host: aUpstream.http.host,
+		originalHostname: "a.example",
+		applyUpstream: null,
+		b: {
+			url: new URL("/a/path?a=1", aUpstream.http.toString()).toString(),
+			host: aUpstream.http.host,
+			originalHostname: "a.example",
+			applyUpstream: null,
+		},
+	});
+});
 test("Miniflare: MF-Original-Hostname header not set without upstream", async ({
 	expect,
 }) => {
