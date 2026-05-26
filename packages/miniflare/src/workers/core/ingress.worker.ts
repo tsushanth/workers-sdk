@@ -16,14 +16,18 @@ function getUpstreamRequest(
 	request: Request<unknown, IncomingRequestCfProperties>,
 	env: Env
 ) {
+	// If Miniflare was configured with `upstream`, then we use this to override the url and host in the request.
 	const upstreamUrl = env[CoreBindings.TEXT_UPSTREAM_URL];
 	if (upstreamUrl === undefined) {
 		return request;
 	}
 
 	let url = new URL(request.url);
+
+	// Store the original hostname before it gets rewritten by upstream
 	const originalHostname = url.host;
 
+	// Resolves relative to `upstream`'s path
 	url = new URL(`.${url.pathname}${url.search}`, upstreamUrl);
 	request = new Request(url, request);
 	request.headers.set("Host", url.host);

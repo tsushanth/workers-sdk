@@ -450,6 +450,7 @@ function handleProxy(request: Request, env: Env) {
 export default <ExportedHandler<Env>>{
 	async fetch(request, env, ctx) {
 		const startTime = Date.now();
+
 		const clientIp = request.cf?.clientIp as string;
 
 		// Parse this manually (rather than using the `cfBlobHeader` config property in workerd to parse it into request.cf)
@@ -472,7 +473,6 @@ export default <ExportedHandler<Env>>{
 		// This must happen before getUserRequest() so we validate the
 		// original browser-sent headers, not Miniflare-rewritten ones.
 		const requestUrl = new URL(request.url);
-
 		try {
 			validateCdnCgiRequest(
 				request,
