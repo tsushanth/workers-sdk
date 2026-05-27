@@ -59,6 +59,12 @@ export const loginCommand = createCommand({
 			requiresArg: false,
 			default: 8976,
 		},
+		"experimental-device": {
+			describe:
+				"(Experimental) Use the OAuth 2.0 Device Authorization Grant (RFC 8628) instead of the localhost callback flow. Useful in containers, remote SSH sessions, or other environments where localhost:8976 is unreachable from your browser.",
+			type: "boolean",
+			default: false,
+		},
 	},
 	async handler(args, { config }) {
 		if (args.scopesList) {
@@ -82,6 +88,7 @@ export const loginCommand = createCommand({
 				browser: args.browser,
 				callbackHost: args.callbackHost,
 				callbackPort: args.callbackPort,
+				experimentalDevice: args.experimentalDevice,
 			});
 			return;
 		}
@@ -89,6 +96,7 @@ export const loginCommand = createCommand({
 			browser: args.browser,
 			callbackHost: args.callbackHost,
 			callbackPort: args.callbackPort,
+			experimentalDevice: args.experimentalDevice,
 		});
 		metrics.sendMetricsEvent("login user", {
 			sendMetrics: config.send_metrics,

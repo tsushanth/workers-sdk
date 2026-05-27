@@ -222,6 +222,7 @@ import {
 	UserError,
 } from "@cloudflare/workers-utils";
 import ci from "ci-info";
+import encodeQR from "qr";
 import TOML from "smol-toml";
 import dedent from "ts-dedent";
 import { fetch } from "undici";
@@ -244,11 +245,13 @@ import {
 	getCloudflareAPITokenFromEnv,
 	getCloudflareGlobalAuthEmailFromEnv,
 	getCloudflareGlobalAuthKeyFromEnv,
+	getDeviceAuthUrlFromEnv,
 	getRevokeUrlFromEnv,
 	getTokenUrlFromEnv,
 } from "./auth-variables";
 import { fetchAllAccounts } from "./fetch-accounts";
 import { generateAuthUrl, OAUTH_CALLBACK_URL } from "./generate-auth-url";
+import { generateVerificationUrl } from "./generate-device-auth-url";
 import { generateRandomState } from "./generate-random-state";
 import type { Account } from "./shared";
 import type { ComplianceConfig } from "@cloudflare/workers-utils";
@@ -607,6 +610,32 @@ class ErrorUnsupportedGrantType extends ErrorAccessTokenResponse {
 }
 
 /**
+ * Device Authorization Grant errors (RFC 8628 §3.5).
+ *
+ * `authorization_pending` and `slow_down` are not surfaced as user-visible
+ * errors — they are signals to the client that polling should continue
+ * (with `slow_down` requiring the polling interval to be increased).
+ *
+ * `expired_token` is surfaced as a `UserError` so the user is told to
+ * re-run `wrangler login --experimental-device` to obtain a new code.
+ */
+class ErrorAuthorizationPending extends ErrorOAuth2 {
+	toString(): string {
+		return "ErrorAuthorizationPending";
+	}
+}
+class ErrorSlowDown extends ErrorOAuth2 {
+	toString(): string {
+		return "ErrorSlowDown";
+	}
+}
+class ErrorExpiredToken extends ErrorOAuth2 {
+	toString(): string {
+		return "ErrorExpiredToken";
+	}
+}
+
+/**
  * Translate the raw error strings returned from the server into error classes.
  */
 function toErrorClass(rawError: string): ErrorOAuth2 | ErrorUnknown {
@@ -658,6 +687,18 @@ function toErrorClass(rawError: string): ErrorOAuth2 | ErrorUnknown {
 		case "invalid_token":
 			return new ErrorInvalidToken(rawError, {
 				telemetryMessage: "user oauth invalid token",
+			});
+		case "authorization_pending":
+			return new ErrorAuthorizationPending(rawError, {
+				telemetryMessage: "user device-flow authorization pending",
+			});
+		case "slow_down":
+			return new ErrorSlowDown(rawError, {
+				telemetryMessage: "user device-flow slow down",
+			});
+		case "expired_token":
+			return new ErrorExpiredToken(rawError, {
+				telemetryMessage: "user device-flow code expired",
 			});
 		default:
 			return new ErrorUnknown(rawError, {
@@ -967,6 +1008,16 @@ type LoginProps = {
 	browser: boolean;
 	callbackHost: string;
 	callbackPort: number;
+	/**
+	 * When true, use the OAuth 2.0 Device Authorization Grant (RFC 8628)
+	 * instead of the authorization-code-with-PKCE flow. The device flow does
+	 * not require a local callback server and works in environments where
+	 * `localhost:8976` is unreachable from the user's browser (e.g.
+	 * containers, remote SSH sessions, Codespaces).
+	 *
+	 * Currently gated behind the `--experimental-device` flag.
+	 */
+	experimentalDevice?: boolean;
 };
 
 export async function loginOrRefreshIfRequired(
@@ -1145,6 +1196,299 @@ export async function getOauthToken(options: {
 	return Promise.race([timerPromise, loginPromise]);
 }
 
+/**
+ * Maximum time (in seconds) Wrangler will poll the token endpoint while
+ * waiting for the user to approve a device authorization request.
+ *
+ * RFC 8628 §3.2 lets the server set `expires_in`, but we apply our own
+ * hard cap on top of that to:
+ *   - keep login feeling fast and finite to the user, and
+ *   - shorten the window in which a leaked user code could be abused
+ *     (RFC 8628 §5.4 — remote phishing).
+ */
+const DEVICE_FLOW_MAX_DURATION_SECONDS = 300;
+
+/**
+ * Minimum polling interval (in seconds) Wrangler will use between token
+ * requests when the authorization server does not provide one or sends a
+ * value below this floor. The server's `interval` is always respected when
+ * it is larger than this value.
+ *
+ * RFC 8628 §3.5 mandates a default of 5 seconds when the server omits
+ * `interval`. We deviate to 1 second because:
+ *   - the server can still throttle us via the `slow_down` error code
+ *     (which adds 5 seconds per RFC 8628 §3.5), and
+ *   - a 5 second baseline feels unacceptably slow for an interactive CLI
+ *     login on a developer's primary workstation.
+ *
+ * If the server explicitly returns a value (e.g. `interval: 5`), that value
+ * is honoured rather than this floor.
+ */
+const DEVICE_FLOW_MIN_POLL_INTERVAL_SECONDS = 1;
+
+interface DeviceAuthorizationResponse {
+	device_code: string;
+	user_code: string;
+	verification_uri: string;
+	verification_uri_complete?: string;
+	expires_in: number;
+	interval?: number;
+}
+
+type DevicePollResponse =
+	| {
+			access_token: string;
+			expires_in: number;
+			refresh_token?: string;
+			scope: string;
+	  }
+	| { error: string };
+
+/**
+ * Request a `device_code` and `user_code` from the authorization server's
+ * device authorization endpoint (RFC 8628 §3.1, §3.2).
+ */
+async function requestDeviceAuthorization(
+	scopes: string[],
+	clientId: string
+): Promise<DeviceAuthorizationResponse> {
+	// `offline_access` is appended unconditionally so the eventual token
+	// response includes a refresh token, matching the behaviour of the
+	// authorization-code flow (see generate-auth-url.ts).
+	const params = new URLSearchParams({
+		client_id: clientId,
+		scope: [...scopes, "offline_access"].join(" "),
+	});
+
+	const headers = await buildAuthTokenHeaders();
+	const deviceAuthUrl = getDeviceAuthUrlFromEnv();
+	logger.debug("Fetching device authorization from", deviceAuthUrl);
+	const response = await fetch(deviceAuthUrl, {
+		method: "POST",
+		body: params.toString(),
+		headers,
+	});
+
+	if (!response.ok) {
+		const body = await getJSONFromResponse(response).catch(() => undefined);
+		const rawError =
+			body && typeof body === "object" && "error" in body
+				? String(body.error)
+				: `HTTP ${response.status} ${response.statusText}`;
+		throw toErrorClass(rawError);
+	}
+
+	return (await getJSONFromResponse(response)) as DeviceAuthorizationResponse;
+}
+
+/**
+ * Send a single poll request to the token endpoint with grant type
+ * `urn:ietf:params:oauth:grant-type:device_code` (RFC 8628 §3.4).
+ *
+ * Returns the parsed response. The caller is responsible for handling the
+ * `authorization_pending` and `slow_down` error codes (continuing to poll)
+ * vs the terminal error codes (aborting).
+ *
+ * Deliberately NOT routed through `fetchAuthToken`: RFC 8628 §3.5 returns
+ * HTTP 400 with `authorization_pending` or `slow_down` on every poll while
+ * the user is approving — those are expected, non-terminal states, not
+ * errors. `fetchAuthToken` would log `logger.error` for each one, producing
+ * a stream of misleading "Failed to fetch auth token: 400 Bad Request"
+ * messages on stderr during a normal login.
+ */
+async function pollDeviceToken(
+	deviceCode: string,
+	clientId: string
+): Promise<DevicePollResponse> {
+	const params = new URLSearchParams({
+		grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+		device_code: deviceCode,
+		client_id: clientId,
+	});
+
+	const headers = await buildAuthTokenHeaders();
+	const tokenUrl = getTokenUrlFromEnv();
+	logger.debug("Polling device token from", tokenUrl);
+
+	const response = await fetch(tokenUrl, {
+		method: "POST",
+		body: params.toString(),
+		headers,
+	});
+	return (await getJSONFromResponse(response)) as DevicePollResponse;
+}
+
+/**
+ * Render a short ASCII QR code of the supplied URL to the terminal.
+ *
+ * Best-effort: any error encoding the QR is logged at debug level and
+ * swallowed — we never want a missing/failed QR to prevent the user from
+ * completing the login.
+ */
+function printVerificationQrCode(verificationUrl: string): void {
+	try {
+		const qrCode = encodeQR(verificationUrl, "ascii", { border: 1 });
+		logger.log(`\n${qrCode}`);
+	} catch (e) {
+		logger.debug(
+			`Failed to render QR code: ${e instanceof Error ? e.message : String(e)}`
+		);
+	}
+}
+
+/**
+ * Wait `seconds` seconds, then resolve. Extracted so tests can mock it
+ * via vi.useFakeTimers().
+ */
+function sleep(seconds: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+}
+
+/**
+ * Acquire an access token via the OAuth 2.0 Device Authorization Grant
+ * (RFC 8628).
+ *
+ * High-level flow:
+ *   1. POST to the device authorization endpoint to get `device_code`,
+ *      `user_code`, and a verification URL.
+ *   2. Display the verification URL, the user code, and a QR code to the
+ *      user. Attempt to open the URL in the default browser.
+ *   3. Poll the token endpoint with `grant_type=device_code` until the user
+ *      approves the request, denies it, or the device code expires. The
+ *      first poll is sent immediately to minimise perceived latency for
+ *      users who approve before we even finish rendering the QR.
+ *
+ * The polling loop applies a Wrangler-side hard cap
+ * ({@link DEVICE_FLOW_MAX_DURATION_SECONDS}) on top of the server-provided
+ * `expires_in` to limit any leaked-code abuse window. Whichever expires
+ * first wins.
+ */
+export async function getOauthTokenViaDeviceFlow(options: {
+	browser: boolean;
+	scopes: string[];
+	clientId: string;
+}): Promise<AccessContext> {
+	const deviceAuth = await requestDeviceAuthorization(
+		options.scopes,
+		options.clientId
+	);
+
+	// Prefer the server-provided verification_uri_complete (RFC 8628 §3.3.1).
+	// Otherwise synthesise one ourselves so QR-scanning users don't have to
+	// type the user_code manually.
+	const verificationUrl =
+		deviceAuth.verification_uri_complete ??
+		generateVerificationUrl({
+			verificationUri: deviceAuth.verification_uri,
+			userCode: deviceAuth.user_code,
+		});
+
+	// Always show the bare verification URI and the user code, even when we
+	// have a complete URL / QR. RFC 8628 §3.3.1: "Clients MUST still display
+	// the user_code, as the authorization server will require the user to
+	// confirm it to disambiguate devices or as remote phishing mitigation".
+	logger.log(
+		dedent`
+		To authorize Wrangler, please visit:
+
+		  ${deviceAuth.verification_uri}
+
+		and enter the code:
+
+		  ${deviceAuth.user_code}
+
+		You have ${DEVICE_FLOW_MAX_DURATION_SECONDS / 60} minutes to approve this request.
+	`
+	);
+
+	// Print the QR code (encodes the URL with the user code embedded so the
+	// user does not have to type anything if they scan it).
+	printVerificationQrCode(verificationUrl);
+
+	if (options.browser) {
+		logger.log(`\nOpening a link in your default browser: ${verificationUrl}`);
+		await openInBrowser(verificationUrl);
+	}
+
+	// Effective overall timeout is the smaller of the server's expires_in
+	// and our wrangler-side cap.
+	const maxDurationSeconds = Math.min(
+		deviceAuth.expires_in,
+		DEVICE_FLOW_MAX_DURATION_SECONDS
+	);
+	const deadline = Date.now() + maxDurationSeconds * 1000;
+
+	// Start with the server-provided interval, but floor it so we don't sit
+	// idle for 5+ seconds between polls if the user approves quickly.
+	let intervalSeconds = Math.max(
+		deviceAuth.interval ?? DEVICE_FLOW_MIN_POLL_INTERVAL_SECONDS,
+		DEVICE_FLOW_MIN_POLL_INTERVAL_SECONDS
+	);
+
+	// Send the first poll immediately rather than waiting `interval` seconds.
+	// In the common case the user approves before we even render the QR, so
+	// the perceived login latency drops from 1-5s to ~the network RTT.
+	let firstPoll = true;
+
+	while (Date.now() < deadline) {
+		if (!firstPoll) {
+			await sleep(intervalSeconds);
+		}
+		firstPoll = false;
+
+		const result = await pollDeviceToken(
+			deviceAuth.device_code,
+			options.clientId
+		);
+
+		if ("error" in result) {
+			switch (result.error) {
+				case "authorization_pending":
+					continue;
+				case "slow_down":
+					// RFC 8628 §3.5: increase the polling interval by 5 seconds
+					// for this and all subsequent requests.
+					intervalSeconds += 5;
+					continue;
+				case "access_denied":
+					throw new UserError(
+						"Consent denied. You must grant consent to Wrangler in order to login.\n" +
+							"If you don't want to do this consider passing an API token via the `CLOUDFLARE_API_TOKEN` environment variable.",
+						{ telemetryMessage: "user device-flow consent denied" }
+					);
+				case "expired_token":
+					throw new UserError(
+						"Device code expired before the request was approved. Please run `wrangler login --experimental-device` again to obtain a new code.",
+						{ telemetryMessage: "user device-flow code expired" }
+					);
+				default:
+					throw toErrorClass(result.error);
+			}
+		}
+
+		// Success — we have an access token.
+		const accessToken: AccessToken = {
+			value: result.access_token,
+			expiry: new Date(Date.now() + result.expires_in * 1000).toISOString(),
+		};
+		const scopes: Scope[] = result.scope
+			? (result.scope.split(" ") as Scope[])
+			: [];
+		return {
+			token: accessToken,
+			scopes,
+			refreshToken: result.refresh_token
+				? { value: result.refresh_token }
+				: undefined,
+		};
+	}
+
+	throw new UserError(
+		`Device authorization timed out after ${DEVICE_FLOW_MAX_DURATION_SECONDS / 60} minutes. Please run \`wrangler login --experimental-device\` again to obtain a new code.`,
+		{ telemetryMessage: "user device-flow authorization timeout" }
+	);
+}
+
 export async function login(
 	complianceConfig: ComplianceConfig,
 	props: LoginProps = {
@@ -1179,24 +1523,44 @@ export async function login(
 		);
 	}
 
-	logger.log("Attempting to login via OAuth...");
+	if (props.experimentalDevice) {
+		// `--callback-host` and `--callback-port` are silently ignored in this
+		// mode (no callback server is started). Warn rather than error so any
+		// existing user scripts that pass them continue to work.
+		if (props.callbackHost !== "localhost" || props.callbackPort !== 8976) {
+			logger.warn(
+				"`--callback-host` and `--callback-port` are ignored when `--experimental-device` is set; the device authorization flow does not use a local callback server."
+			);
+		}
+		logger.log(
+			"Attempting to login via OAuth Device Authorization Grant (experimental)..."
+		);
+	} else {
+		logger.log("Attempting to login via OAuth...");
+	}
 
-	const oauth = await getOauthToken({
-		browser: !!props.browser,
-		scopes: props.scopes ?? DefaultScopeKeys,
-		clientId: getClientIdFromEnv(),
-		denied: {
-			url: "https://welcome.developers.workers.dev/wrangler-oauth-consent-denied",
-			error:
-				"Error: Consent denied. You must grant consent to Wrangler in order to login.\n" +
-				"If you don't want to do this consider passing an API token via the `CLOUDFLARE_API_TOKEN` environment variable",
-		},
-		granted: {
-			url: "https://welcome.developers.workers.dev/wrangler-oauth-consent-granted",
-		},
-		callbackHost: props.callbackHost,
-		callbackPort: props.callbackPort,
-	});
+	const oauth = props.experimentalDevice
+		? await getOauthTokenViaDeviceFlow({
+				browser: !!props.browser,
+				scopes: props.scopes ?? DefaultScopeKeys,
+				clientId: getClientIdFromEnv(),
+			})
+		: await getOauthToken({
+				browser: !!props.browser,
+				scopes: props.scopes ?? DefaultScopeKeys,
+				clientId: getClientIdFromEnv(),
+				denied: {
+					url: "https://welcome.developers.workers.dev/wrangler-oauth-consent-denied",
+					error:
+						"Error: Consent denied. You must grant consent to Wrangler in order to login.\n" +
+						"If you don't want to do this consider passing an API token via the `CLOUDFLARE_API_TOKEN` environment variable",
+				},
+				granted: {
+					url: "https://welcome.developers.workers.dev/wrangler-oauth-consent-granted",
+				},
+				callbackHost: props.callbackHost,
+				callbackPort: props.callbackPort,
+			});
 
 	writeAuthConfigFile({
 		oauth_token: oauth.token?.value ?? "",
@@ -1485,24 +1849,43 @@ export function printScopes(scopes: Scope[]) {
 }
 
 /**
- * Make a request to the Cloudflare OAuth endpoint to get a token.
+ * Build the HTTP headers for a form-urlencoded POST to one of the Cloudflare
+ * OAuth endpoints. Adds the Cloudflare Access service-token headers if the
+ * auth domain is behind Access (e.g. staging).
  *
- * Note that the `body` of the POST request is form-urlencoded so
- * can be represented by a URLSearchParams object.
+ * Extracted so that both `fetchAuthToken` (auth-code / refresh-token flows)
+ * and the device-flow code paths can share the same header logic without
+ * duplicating the Access-detection block.
  */
-async function fetchAuthToken(body: URLSearchParams) {
+async function buildAuthTokenHeaders(): Promise<Record<string, string>> {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/x-www-form-urlencoded",
 	};
-	logger.debug("fetching auth token", body.toString());
 	if (await domainUsesAccess(getAuthDomainFromEnv())) {
 		logger.debug(
 			"Using Cloudflare Access to get an access token for the auth request"
 		);
-		// We are trying to access a domain behind Access so we need auth headers.
-		const accessHeaders = await getCloudflareAccessHeaders();
-		Object.assign(headers, accessHeaders);
+		Object.assign(headers, await getCloudflareAccessHeaders());
 	}
+	return headers;
+}
+
+/**
+ * Make a request to the Cloudflare OAuth endpoint to get a token.
+ *
+ * Note that the `body` of the POST request is form-urlencoded so
+ * can be represented by a URLSearchParams object.
+ *
+ * Logs `logger.error` on non-2xx responses — appropriate for the auth-code
+ * and refresh-token flows where a non-2xx response is always terminal.
+ *
+ * **Do not use this from the device-flow polling loop**, where HTTP 400 with
+ * `authorization_pending` / `slow_down` is the expected control mechanism
+ * per RFC 8628 §3.5. Use a separate inline `fetch` there instead.
+ */
+async function fetchAuthToken(body: URLSearchParams) {
+	const headers = await buildAuthTokenHeaders();
+	logger.debug("fetching auth token", body.toString());
 	logger.debug("Fetching auth token from", getTokenUrlFromEnv());
 	try {
 		const response = await fetch(getTokenUrlFromEnv(), {

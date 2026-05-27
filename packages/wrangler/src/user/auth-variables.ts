@@ -98,6 +98,29 @@ export const getRevokeUrlFromEnv = getEnvironmentVariableFactory({
 	defaultValue: () => `https://${getAuthDomainFromEnv()}/oauth2/revoke`,
 });
 
+/**
+ * The path used by Hydra for the OAuth 2.0 Device Authorization endpoint
+ * (RFC 8628 §3.1). Override per-environment with `WRANGLER_DEVICE_AUTH_URL`.
+ *
+ * Kept as a top-level constant so it is easy to update if the Hydra deployment
+ * exposes the device authorization endpoint at a different path.
+ */
+const DEFAULT_DEVICE_AUTH_PATH = "/oauth2/device/auth";
+
+/**
+ * `WRANGLER_DEVICE_AUTH_URL` is the path used to obtain a device code and
+ * user code from the OAuth 2.0 Device Authorization endpoint (RFC 8628).
+ *
+ * Normally you should not need to set this explicitly.
+ * If you want to switch to the staging environment set the
+ * `WRANGLER_API_ENVIRONMENT=staging` environment variable instead.
+ */
+export const getDeviceAuthUrlFromEnv = getEnvironmentVariableFactory({
+	variableName: "WRANGLER_DEVICE_AUTH_URL",
+	defaultValue: () =>
+		`https://${getAuthDomainFromEnv()}${DEFAULT_DEVICE_AUTH_PATH}`,
+});
+
 export const getWranglerR2SqlAuthToken = getEnvironmentVariableFactory({
 	variableName: "WRANGLER_R2_SQL_AUTH_TOKEN",
 });

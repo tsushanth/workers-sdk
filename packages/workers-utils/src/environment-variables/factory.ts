@@ -92,6 +92,8 @@ type VariableNames =
 	| "WRANGLER_CLIENT_ID"
 	/** Custom token URL (usually auto-configured). */
 	| "WRANGLER_TOKEN_URL"
+	/** Custom OAuth 2.0 Device Authorization endpoint URL (RFC 8628; usually auto-configured). */
+	| "WRANGLER_DEVICE_AUTH_URL"
 	/** Custom token revocation URL (usually auto-configured). */
 	| "WRANGLER_REVOKE_URL"
 	/** Direct authorization token for API requests. */
