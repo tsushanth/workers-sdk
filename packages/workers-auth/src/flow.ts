@@ -12,15 +12,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import { rmSync } from "node:fs";
 import {
 	getCloudflareComplianceRegion,
 	UserError,
 } from "@cloudflare/workers-utils";
 import dedent from "ts-dedent";
 import { fetch } from "undici";
-import { getAuthConfigFilePath, writeAuthConfigFile } from "./auth-config-file";
+import { deleteAuthConfig, writeAuthConfigFile } from "./auth-config-file";
 import { getOauthToken } from "./callback-server";
+import { getActiveCredentialStore } from "./credential-store/resolver";
+import { setCredentialStorageState } from "./credential-store/state";
 import { getClientIdFromEnv, getRevokeUrlFromEnv } from "./env-vars";
 import {
 	generateAuthUrl as defaultGenerateAuthUrl,
@@ -30,6 +31,7 @@ import { generateRandomState as defaultGenerateRandomState } from "./generate-ra
 import { readStoredAuthState, type OAuthFlowState } from "./state";
 import { exchangeRefreshTokenForAccessToken } from "./token-exchange";
 import type { OAuthFlowContext } from "./context";
+import type { CredentialStore } from "./credential-store/interface";
 import type { ComplianceConfig } from "@cloudflare/workers-utils";
 
 /**
@@ -115,6 +117,16 @@ export interface OAuthFlowAPI {
 	 * tokens to disk on success. Returns `false` on any failure.
 	 */
 	refreshToken(): Promise<boolean>;
+
+	/**
+	 * Return the currently-active credential store.
+	 *
+	 * Resolved per-call so runtime changes to `isKeyringEnabled()` or the
+	 * `CLOUDFLARE_AUTH_USE_KEYRING` env var take effect without rebuilding
+	 * the OAuth flow. Consumers typically use this from `whoami`-style
+	 * commands to surface the storage location.
+	 */
+	getCredentialStore(): CredentialStore;
 }
 
 /**
@@ -125,6 +137,20 @@ export interface OAuthFlowAPI {
  * exactly one instance per process.
  */
 export function createOAuthFlow(ctx: OAuthFlowContext): OAuthFlowAPI {
+	validateCredentialStorageContext(ctx);
+
+	// Push the credential-storage configuration into module state so
+	// `writeAuthConfigFile` / `readAuthConfigFile` / `deleteAuthConfig` and
+	// the resolver (`getActiveCredentialStore`) can consult it from
+	// anywhere without threading the context through every call site.
+	setCredentialStorageState({
+		serviceName: ctx.credentialStorage.serviceName,
+		isKeyringEnabled: ctx.credentialStorage.isKeyringEnabled,
+		logger: ctx.logger,
+		isNonInteractiveOrCI: ctx.isNonInteractiveOrCI,
+		cliName: ctx.credentialStorage.cliName ?? "your CLI",
+	});
+
 	const oauthFlowState: OAuthFlowState = {};
 	const generators = {
 		generateAuthUrl: ctx.generateAuthUrl ?? defaultGenerateAuthUrl,
@@ -300,7 +326,7 @@ export function createOAuthFlow(ctx: OAuthFlowContext): OAuthFlowAPI {
 			},
 		});
 		await response.text(); // blank text? would be nice if it was something meaningful
-		rmSync(getAuthConfigFilePath());
+		deleteAuthConfig();
 		ctx.logger.log(`Successfully logged out.`);
 		ctx.purgeOnLoginOrLogout?.();
 	}
@@ -338,7 +364,42 @@ export function createOAuthFlow(ctx: OAuthFlowContext): OAuthFlowAPI {
 		getOAuthTokenFromLocalState,
 		isRefreshNeeded,
 		refreshToken,
+		getCredentialStore: getActiveCredentialStore,
 	};
+}
+
+/**
+ * Validate that the consumer-supplied {@link OAuthFlowContext.credentialStorage}
+ * block is present and well-formed. Throws a {@link UserError} with a stable
+ * telemetry label so misuses surface clearly at startup rather than later in
+ * an obscure code path.
+ */
+function validateCredentialStorageContext(ctx: OAuthFlowContext): void {
+	const cs = (ctx as Partial<OAuthFlowContext>).credentialStorage;
+	if (cs === undefined) {
+		throw new UserError(
+			"createOAuthFlow: `credentialStorage` is required. Provide a `serviceName` and `isKeyringEnabled` callback (return `() => false` for file-only storage).",
+			{ telemetryMessage: "workers-auth credential storage missing" }
+		);
+	}
+	if (typeof cs.serviceName !== "string" || cs.serviceName.length === 0) {
+		throw new UserError(
+			"createOAuthFlow: `credentialStorage.serviceName` must be a non-empty string.",
+			{
+				telemetryMessage:
+					"workers-auth credential storage service name invalid",
+			}
+		);
+	}
+	if (typeof cs.isKeyringEnabled !== "function") {
+		throw new UserError(
+			"createOAuthFlow: `credentialStorage.isKeyringEnabled` must be a function.",
+			{
+				telemetryMessage:
+					"workers-auth credential storage isKeyringEnabled invalid",
+			}
+		);
+	}
 }
 
 // Re-export the constant for callers that want to know about the redirect URI

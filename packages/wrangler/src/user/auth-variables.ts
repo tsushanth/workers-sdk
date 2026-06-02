@@ -31,5 +31,5 @@ export const getWranglerR2SqlAuthToken = getEnvironmentVariableFactory({
 // OAuth-flow-related env-var getters (`WRANGLER_CLIENT_ID`, `WRANGLER_AUTH_DOMAIN`,
 // `WRANGLER_AUTH_URL`, `WRANGLER_TOKEN_URL`, `WRANGLER_REVOKE_URL`,
 // `WRANGLER_CF_AUTHORIZATION_TOKEN`, `CLOUDFLARE_ACCESS_CLIENT_ID`,
-// `CLOUDFLARE_ACCESS_CLIENT_SECRET`) have moved to `@cloudflare/workers-auth`
-// alongside the OAuth flow itself.
+// `CLOUDFLARE_ACCESS_CLIENT_SECRET`, `CLOUDFLARE_AUTH_USE_KEYRING`) have moved
+// to `@cloudflare/workers-auth` alongside the OAuth flow itself.

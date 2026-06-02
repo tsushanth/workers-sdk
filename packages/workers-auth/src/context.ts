@@ -69,6 +69,48 @@ export interface OAuthFlowContext {
 	 * implementation.
 	 */
 	generateRandomState?: typeof defaultGenerateRandomState;
+
+	/**
+	 * Configuration for the credential-storage layer.
+	 *
+	 * REQUIRED. Even consumers that don't care about OS keyring storage need
+	 * to provide this so they explicitly opt in to either the file-only
+	 * default (by returning `false` from `isKeyringEnabled`) or the
+	 * encrypted-file-with-keyring-key path. Forcing the choice keeps a
+	 * future "where are credentials stored?" question off the table.
+	 */
+	credentialStorage: CredentialStorageContext;
+}
+
+/**
+ * Per-consumer settings for the credential-storage layer. Captured by
+ * {@link createOAuthFlow} and consulted by every call to
+ * {@link writeAuthConfigFile} / {@link readAuthConfigFile} /
+ * {@link deleteAuthConfig} and by {@link OAuthFlowAPI.getCredentialStore}.
+ */
+export interface CredentialStorageContext {
+	/**
+	 * Keyring service identifier. REQUIRED. Becomes the `-s` argument to
+	 * `/usr/bin/security`, the `service` attribute for `secret-tool`, and
+	 * the `service` argument to `@napi-rs/keyring`'s `Entry`.
+	 *
+	 * Conventionally the consumer's CLI name in lowercase, e.g. "wrangler".
+	 */
+	serviceName: string;
+
+	/**
+	 * Whether the user has opted into keyring storage. Called on every
+	 * credential read/write so runtime preference changes (e.g. a user
+	 * toggling the option mid-session) take effect.
+	 */
+	isKeyringEnabled: () => boolean;
+
+	/**
+	 * Consumer's CLI name for error-message templating, e.g. "wrangler".
+	 * Used in hints like ``Run `<cliName> login --use-keyring` …``.
+	 * Defaults to `"your CLI"` when omitted.
+	 */
+	cliName?: string;
 }
 
 export type { OAUTH_CALLBACK_URL };

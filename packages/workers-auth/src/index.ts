@@ -7,6 +7,7 @@
 // tests.
 
 export {
+	deleteAuthConfig,
 	getAuthConfigFilePath,
 	readAuthConfigFile,
 	writeAuthConfigFile,
@@ -20,7 +21,11 @@ export {
 	getCloudflareAccessHeaders,
 } from "./access";
 
-export type { OAuthFlowContext, OAuthFlowLogger } from "./context";
+export type {
+	CredentialStorageContext,
+	OAuthFlowContext,
+	OAuthFlowLogger,
+} from "./context";
 
 export {
 	getAccessClientIdFromEnv,
@@ -29,6 +34,7 @@ export {
 	getAuthUrlFromEnv,
 	getCfAuthorizationTokenFromEnv,
 	getClientIdFromEnv,
+	getCloudflareAuthUseKeyringFromEnv,
 	getRevokeUrlFromEnv,
 	getTokenUrlFromEnv,
 } from "./env-vars";
@@ -78,3 +84,46 @@ export type {
 	RefreshToken,
 	StoredAuthState,
 } from "./state";
+
+// Credential storage layer. Consumers (wrangler, future Cloudflare CLIs)
+// usually interact with this via `OAuthFlowAPI.getCredentialStore()`,
+// but the underlying pieces are exported here for tests, `whoami`-style
+// reporting, and the `--no-use-keyring` opt-out migration helper.
+export {
+	clearCredentialStorageState,
+	EncryptedFileCredentialStore,
+	FileCredentialStore,
+	encryptString,
+	decryptString,
+	findKeyringBinding,
+	generateKey,
+	getActiveCredentialStore,
+	getEncryptedAuthConfigFilePath,
+	getKeyringAccountName,
+	getKeyringInstallDir,
+	installKeyringBindingSync,
+	LinuxSecretToolKeyProvider,
+	MacSecurityKeyProvider,
+	NapiKeyringKeyProvider,
+	parseEncryptedEnvelope,
+	PINNED_KEYRING_VERSION,
+	probeSecretTool,
+	resetCredentialStorageState,
+	resolveKeyProvider,
+	setKeyProviderFactoryForTesting,
+	setKeyringEntryFactory,
+	setLinuxSecretToolRunner,
+	setMacSecurityCommandRunner,
+	setNpmRunner,
+} from "./credential-store";
+export type {
+	CredentialStore,
+	EncryptedEnvelope,
+	KeyProvider,
+	KeyProviderResolution,
+	KeyringEntry,
+	KeyringEntryFactory,
+	LinuxSecretToolRunner,
+	MacSecurityCommandRunner,
+	NpmRunner,
+} from "./credential-store";

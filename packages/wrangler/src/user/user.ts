@@ -30,8 +30,9 @@ import {
 import { fetchAllAccounts } from "./fetch-accounts";
 import { generateAuthUrl } from "./generate-auth-url";
 import { generateRandomState } from "./generate-random-state";
+import { readUserPreferences } from "./preferences";
 import type { Account } from "./shared";
-import type { LoginProps } from "@cloudflare/workers-auth";
+import type { CredentialStore, LoginProps } from "@cloudflare/workers-auth";
 import type {
 	ApiCredentials,
 	ComplianceConfig,
@@ -48,6 +49,11 @@ import type {
  * in `vitest.setup.ts` (which produce deterministic snapshot URLs) continue to
  * apply — the mocked versions are injected via the context here and used
  * internally by `@cloudflare/workers-auth`.
+ *
+ * `credentialStorage` plumbs wrangler's user-level keyring opt-in preference
+ * (the `keyring_enabled` flag in `<global-wrangler-config>/preferences.json`)
+ * into the OAuth flow, so the OAuth flow's writes go through whichever store
+ * (plaintext TOML or encrypted-file-with-keyring-key) the user has chosen.
  */
 const oauthFlow = createOAuthFlow({
 	logger,
@@ -57,7 +63,23 @@ const oauthFlow = createOAuthFlow({
 	purgeOnLoginOrLogout: purgeConfigCaches,
 	generateAuthUrl,
 	generateRandomState,
+	credentialStorage: {
+		serviceName: "wrangler",
+		isKeyringEnabled: () => readUserPreferences().keyring_enabled === true,
+		cliName: "wrangler",
+	},
 });
+
+/**
+ * The currently-active credential store, resolved per-call so runtime
+ * preference changes (`wrangler login --use-keyring` /
+ * `--no-use-keyring` / `CLOUDFLARE_AUTH_USE_KEYRING` env var) take
+ * effect immediately. Consumed by `wrangler whoami` to surface where
+ * credentials live.
+ */
+export function getCredentialStore(): CredentialStore {
+	return oauthFlow.getCredentialStore();
+}
 
 /**
  * Try to read API credentials from environment variables.

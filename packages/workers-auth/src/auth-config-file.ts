@@ -1,15 +1,10 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import path from "node:path";
-import {
-	getCloudflareApiEnvironmentFromEnv,
-	getGlobalWranglerConfigPath,
-	parseTOML,
-	readFileSync,
-} from "@cloudflare/workers-utils";
-import TOML from "smol-toml";
-
 /**
- * The data that may be read from the on-disk user auth config file.
+ * The data persisted by either the legacy plaintext TOML file or the
+ * encrypted file backed by an OS-keyring-held key.
+ *
+ * Defined here (rather than colocated with `FileCredentialStore`) so
+ * downstream consumers and tests that import `UserAuthConfig` keep the
+ * same import path they had before the credential-store module landed.
  */
 export interface UserAuthConfig {
 	oauth_token?: string;
@@ -20,49 +15,45 @@ export interface UserAuthConfig {
 	api_token?: string;
 }
 
-/**
- * The path to the config file that holds user authentication data,
- * relative to the user's home directory.
- */
-const USER_AUTH_CONFIG_PATH = "config";
+// `getAuthConfigFilePath`, the `FileCredentialStore` class, and the
+// encrypted-file-related helpers live in the `credential-store` module.
+// Re-export the file path helper here so existing callers
+// (`flow.ts`, `state.ts`, consumer tests asserting against the legacy
+// plaintext path) don't need to change their imports.
+export { getAuthConfigFilePath } from "./credential-store/file-store";
+
+import { getActiveCredentialStore } from "./credential-store/resolver";
 
 /**
- * Returns the absolute path to the auth config TOML file.
+ * Persist the user auth config via the currently-active credential store.
  *
- * The file lives under the global Wrangler config directory and is named
- * `default.toml` in production, or `<environment>.toml` for the staging /
- * other Cloudflare API environments.
- */
-export function getAuthConfigFilePath(): string {
-	const environment = getCloudflareApiEnvironmentFromEnv();
-	const filePath = `${USER_AUTH_CONFIG_PATH}/${environment === "production" ? "default.toml" : `${environment}.toml`}`;
-	return path.join(getGlobalWranglerConfigPath(), filePath);
-}
-
-/**
- * Writes the user auth config to disk.
- *
- * No in-memory cache to invalidate — auth state is read on demand by every call
- * site that needs it. Callers are responsible for any consumer-side cache
- * purging (e.g. via the {@link OAuthFlowContext.purgeOnLoginOrLogout} hook).
+ * The store is resolved per-call so runtime changes to the consumer's
+ * preferences (e.g. a user toggling `--use-keyring` mid-session) take
+ * effect without rebuilding the OAuth flow.
  */
 export function writeAuthConfigFile(config: UserAuthConfig): void {
-	const configPath = getAuthConfigFilePath();
-
-	mkdirSync(path.dirname(configPath), {
-		recursive: true,
-	});
-	writeFileSync(configPath, TOML.stringify(config), {
-		encoding: "utf-8",
-	});
+	getActiveCredentialStore().write(config);
 }
 
 /**
- * Reads the user auth config from disk.
+ * Read the user auth config from the currently-active credential store.
  *
- * @throws if the file does not exist or cannot be parsed as TOML. Callers
- * typically catch this and treat the failure as "not logged in via local OAuth".
+ * @throws when no credentials are stored. Matches the historical
+ * "throws on missing file" semantics that callers already handle with
+ * try/catch (see `readStoredAuthState`).
  */
 export function readAuthConfigFile(): UserAuthConfig {
-	return parseTOML(readFileSync(getAuthConfigFilePath())) as UserAuthConfig;
+	const value = getActiveCredentialStore().read();
+	if (value === undefined) {
+		throw new Error("No credentials stored");
+	}
+	return value;
+}
+
+/**
+ * Delete the persisted credentials via the currently-active store. Used
+ * by the OAuth logout flow.
+ */
+export function deleteAuthConfig(): void {
+	getActiveCredentialStore().delete();
 }
