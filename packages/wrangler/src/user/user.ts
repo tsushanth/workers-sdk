@@ -39,6 +39,18 @@ import type {
 } from "@cloudflare/workers-utils";
 
 /**
+ * Keyring service identifier passed to `createOAuthFlow` and to the
+ * opt-out scrub in `commands.ts`. Defined here so both sites stay in
+ * sync — this becomes the `-s` arg to macOS `security`, the `service`
+ * attribute for Linux `secret-tool`, and the `service` arg to
+ * `@napi-rs/keyring`'s `Entry` on Windows. The opt-out scrub in
+ * `commands.ts` bypasses the credential-store resolver (which can be
+ * short-circuited by `CLOUDFLARE_AUTH_USE_KEYRING=false`) and so needs
+ * the same identifier directly.
+ */
+export const WRANGLER_KEYRING_SERVICE_NAME = "wrangler";
+
+/**
  * The single wrangler-wide OAuth flow instance.
  *
  * Wires the OAuth-flow primitives in `@cloudflare/workers-auth` to wrangler's
@@ -64,7 +76,7 @@ const oauthFlow = createOAuthFlow({
 	generateAuthUrl,
 	generateRandomState,
 	credentialStorage: {
-		serviceName: "wrangler",
+		serviceName: WRANGLER_KEYRING_SERVICE_NAME,
 		isKeyringEnabled: () => readUserPreferences().keyring_enabled === true,
 		cliName: "wrangler",
 	},
