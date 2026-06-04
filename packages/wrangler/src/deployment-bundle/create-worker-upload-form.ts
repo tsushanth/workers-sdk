@@ -82,6 +82,7 @@ export function createWorkerUploadForm(
 		assets,
 		observability,
 		cache,
+		package_dependencies,
 	} = worker;
 
 	const assetConfig: AssetConfigMetadata = {
@@ -847,6 +848,7 @@ export function createWorkerUploadForm(
 		}),
 		...(observability && { observability }),
 		...(cache && { cache_options: cache }),
+		...(package_dependencies?.length && { package_dependencies }),
 	};
 
 	if (options?.unsafe?.metadata !== undefined) {

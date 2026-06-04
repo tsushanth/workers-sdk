@@ -73,6 +73,7 @@ import { confirmLatestDeploymentOverwrite } from "../versions/deploy";
 import { checkRemoteSecretsOverride } from "./check-remote-secrets-override";
 import { checkWorkflowConflicts } from "./check-workflow-conflicts";
 import { getConfigPatch, getRemoteConfigDiff } from "./config-diffs";
+import { collectPackageDependencies } from "./deployment-metadata";
 import type { StartDevWorkerInput } from "../api/startDevWorker/types";
 import type { HandlerContext } from "../core/types";
 import type { RetrieveSourceMapFunction } from "../sourcemap";
@@ -636,6 +637,11 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 			content: content,
 			type: bundleType,
 		};
+		const packageDependencies =
+			config.dependencies_instrumentation !== false && props.projectRoot
+				? collectPackageDependencies(props.projectRoot)
+				: undefined;
+
 		const worker: CfWorkerInit = {
 			name: scriptName,
 			main,
@@ -674,6 +680,7 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 					: undefined,
 			observability: config.observability,
 			cache: config.cache,
+			package_dependencies: packageDependencies,
 		};
 
 		sourceMapSize = worker.sourceMaps?.reduce(

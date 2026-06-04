@@ -26,6 +26,7 @@ import {
 import { fetchResult } from "../cfetch";
 import { createCommand } from "../core/create-command";
 import { createDeployHelpersContext } from "../core/deploy-helpers-context";
+import { collectPackageDependencies } from "../deploy/deployment-metadata";
 import { getBindings, provisionBindings } from "../deployment-bundle/bindings";
 import { bundleWorker } from "../deployment-bundle/bundle";
 import { printBundleSize } from "../deployment-bundle/bundle-reporter";
@@ -594,6 +595,11 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 			content: content,
 			type: bundleType,
 		};
+		const packageDependencies =
+			config.dependencies_instrumentation !== false && props.projectRoot
+				? collectPackageDependencies(props.projectRoot)
+				: undefined;
+
 		const worker: CfWorkerInit = {
 			name: scriptName,
 			main,
@@ -631,6 +637,7 @@ See https://developers.cloudflare.com/workers/platform/compatibility-dates for m
 			logpush: undefined, // logpush and observability are non-versioned settings
 			observability: undefined,
 			cache: config.cache, // cache is a versioned setting
+			package_dependencies: packageDependencies,
 		};
 
 		if (config.containers && config.containers.length > 0) {
