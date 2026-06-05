@@ -100,6 +100,7 @@ export const deployCommand = createCommand({
 		}),
 		warnIfMultipleEnvsConfiguredButNoneSpecified: true,
 		printMetricsBanner: true,
+		supportsNewConfig: true,
 	},
 	validateArgs(args) {
 		validateDeployVersionsArgs(args, "deploy");
