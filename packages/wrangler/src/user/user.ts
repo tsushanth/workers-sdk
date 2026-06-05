@@ -18,6 +18,7 @@ import ci from "ci-info";
 import { getConfigCache, saveToConfigCache } from "../config-cache";
 import { purgeConfigCaches } from "../config-cache";
 import { NoDefaultValueProvided, select } from "../dialogs";
+import { getProfile } from "../experimental-flags";
 import { isNonInteractiveOrCI } from "../is-interactive";
 import { logger } from "../logger";
 import openInBrowser from "../open-in-browser";
@@ -159,9 +160,11 @@ export function listScopes(message = "💁 Available scopes:"): void {
  * the user is not logged in via OAuth (e.g. env-based auth).
  */
 export function getScopes(): Scope[] | undefined {
-	return readStoredAuthState({ warningLogger: logger }).scopes as
-		| Scope[]
-		| undefined;
+	const profile = getProfile();
+	return readStoredAuthState({
+		warningLogger: logger,
+		profile: profile !== "default" ? profile : undefined,
+	}).scopes as Scope[] | undefined;
 }
 
 export function printScopes(scopes: Scope[]) {
@@ -183,7 +186,11 @@ export function getAPIToken(): ApiCredentials | undefined {
 		return envAuth;
 	}
 
-	const stored = readStoredAuthState({ warningLogger: logger });
+	const profile = getProfile();
+	const stored = readStoredAuthState({
+		warningLogger: logger,
+		profile: profile !== "default" ? profile : undefined,
+	});
 	if (stored.deprecatedApiToken) {
 		return { apiToken: stored.deprecatedApiToken };
 	}
@@ -217,18 +224,21 @@ type WranglerLoginProps = {
 	browser?: boolean;
 	callbackHost?: string;
 	callbackPort?: number;
+	profile?: string;
 };
 
 function withDefaultScopes(
 	complianceConfig: ComplianceConfig,
 	props: WranglerLoginProps | undefined
 ): LoginProps {
+	const resolved = props?.profile ?? getProfile();
 	return {
 		complianceConfig,
 		scopes: props?.scopes ?? DefaultScopeKeys,
 		browser: props?.browser ?? true,
 		callbackHost: props?.callbackHost ?? "localhost",
 		callbackPort: props?.callbackPort ?? 8976,
+		profile: resolved !== "default" ? resolved : undefined,
 	};
 }
 
@@ -239,8 +249,8 @@ export async function login(
 	return oauthFlow.login(withDefaultScopes(complianceConfig, props));
 }
 
-export async function logout(): Promise<void> {
-	return oauthFlow.logout();
+export async function logout(profile?: string): Promise<void> {
+	return oauthFlow.logout(profile);
 }
 
 export async function loginOrRefreshIfRequired(
@@ -255,7 +265,10 @@ export async function loginOrRefreshIfRequired(
 export async function getOAuthTokenFromLocalState(): Promise<
 	string | undefined
 > {
-	return oauthFlow.getOAuthTokenFromLocalState();
+	const profile = getProfile();
+	return oauthFlow.getOAuthTokenFromLocalState(
+		profile !== "default" ? profile : undefined
+	);
 }
 
 // Re-export the auth-config-file pure helpers from the package so the
@@ -408,20 +421,34 @@ export async function requireAuth(
 	return accountId;
 }
 
+function getAccountCacheFileName(): string {
+	const profile = getProfile();
+	if (profile === "default") {
+		return "wrangler-account.json";
+	}
+	return `wrangler-account-${profile}.json`;
+}
+
 /**
  * Saves the given account details to the filesystem cache.
+ * Cache is scoped to the resolved profile so different profiles
+ * in the same directory don't clobber each other.
  *
  * @param account The account to save
  */
 function saveAccountToCache(account: Account): void {
-	saveToConfigCache<{ account: Account }>("wrangler-account.json", { account });
+	saveToConfigCache<{ account: Account }>(getAccountCacheFileName(), {
+		account,
+	});
 }
 
 /**
  * Retrieves the account details from the filesystem cache.
+ * Cache is scoped to the resolved profile.
  *
  * @returns The cached account if present, `undefined` otherwise
  */
 export function getAccountFromCache(): undefined | Account {
-	return getConfigCache<{ account: Account }>("wrangler-account.json").account;
+	return getConfigCache<{ account: Account }>(getAccountCacheFileName())
+		.account;
 }

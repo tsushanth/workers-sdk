@@ -230,6 +230,7 @@ export async function unstable_dev(
 			MULTIWORKER: false,
 			RESOURCES_PROVISION: false,
 			AUTOCREATE_RESOURCES: false,
+			profile: "default",
 		},
 		() => startDev(devOptions)
 	);

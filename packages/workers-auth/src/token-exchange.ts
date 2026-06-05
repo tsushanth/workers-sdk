@@ -132,12 +132,14 @@ export async function getAuthURL(
  */
 export async function exchangeRefreshTokenForAccessToken(
 	logger: OAuthFlowContext["logger"],
-	isNonInteractiveOrCI: OAuthFlowContext["isNonInteractiveOrCI"]
+	isNonInteractiveOrCI: OAuthFlowContext["isNonInteractiveOrCI"],
+	profile?: string
 ): Promise<AccessContext> {
 	// Read the refresh token fresh from disk on every call so we always pick up
 	// the latest rotation written by a sibling Wrangler process.
 	const storedRefreshToken = readStoredAuthState({
 		warningLogger: logger,
+		profile,
 	}).refreshToken;
 	if (!storedRefreshToken) {
 		logger.warn("No refresh token is present.");

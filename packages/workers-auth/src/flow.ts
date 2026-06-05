@@ -51,6 +51,11 @@ export interface LoginProps {
 	callbackHost?: string;
 	/** Port the local callback server listens on. Defaults to `8976`. */
 	callbackPort?: number;
+	/**
+	 * Named auth profile to store the token under. When omitted, the default
+	 * profile (`default.toml`) is used.
+	 */
+	profile?: string;
 }
 
 /**
@@ -76,7 +81,7 @@ export interface OAuthFlowAPI {
 	 * No-op when `ctx.hasEnvCredentials()` returns `true` (env credentials
 	 * cannot be revoked).
 	 */
-	logout(): Promise<void>;
+	logout(profile?: string): Promise<void>;
 
 	/**
 	 * If the user has no stored OAuth token, attempt an interactive login.
@@ -100,7 +105,7 @@ export interface OAuthFlowAPI {
 	 * This intentionally does NOT consult env credentials — callers that want
 	 * env-or-OAuth resolution should check env first themselves.
 	 */
-	getOAuthTokenFromLocalState(): Promise<string | undefined>;
+	getOAuthTokenFromLocalState(profile?: string): Promise<string | undefined>;
 
 	/**
 	 * Whether the stored OAuth access token has expired and a refresh is
@@ -184,12 +189,15 @@ export function createOAuthFlow(ctx: OAuthFlowContext): OAuthFlowAPI {
 			generators
 		);
 
-		writeAuthConfigFile({
-			oauth_token: oauth.token?.value ?? "",
-			expiration_time: oauth.token?.expiry,
-			refresh_token: oauth.refreshToken?.value,
-			scopes: oauth.scopes,
-		});
+		writeAuthConfigFile(
+			{
+				oauth_token: oauth.token?.value ?? "",
+				expiration_time: oauth.token?.expiry,
+				refresh_token: oauth.refreshToken?.value,
+				scopes: oauth.scopes,
+			},
+			props.profile
+		);
 
 		ctx.logger.log(`Successfully logged in.`);
 
@@ -198,15 +206,18 @@ export function createOAuthFlow(ctx: OAuthFlowContext): OAuthFlowAPI {
 		return true;
 	}
 
-	function isRefreshNeeded(): boolean {
+	function isRefreshNeeded(profile?: string): boolean {
 		if (ctx.hasEnvCredentials()) {
 			return false;
 		}
-		const { accessToken } = readStoredAuthState({ warningLogger: ctx.logger });
+		const { accessToken } = readStoredAuthState({
+			warningLogger: ctx.logger,
+			profile,
+		});
 		return Boolean(accessToken && new Date() >= new Date(accessToken.expiry));
 	}
 
-	async function refreshToken(): Promise<boolean> {
+	async function refreshToken(profile?: string): Promise<boolean> {
 		// `exchangeRefreshTokenForAccessToken` reads the refresh token fresh from
 		// disk on every call, so we always pick up the latest rotation written by a
 		// sibling Wrangler process. Refresh tokens are single-use, so a long-lived
@@ -223,14 +234,18 @@ export function createOAuthFlow(ctx: OAuthFlowContext): OAuthFlowAPI {
 				scopes,
 			} = await exchangeRefreshTokenForAccessToken(
 				ctx.logger,
-				ctx.isNonInteractiveOrCI
+				ctx.isNonInteractiveOrCI,
+				profile
 			);
-			writeAuthConfigFile({
-				oauth_token,
-				expiration_time,
-				refresh_token,
-				scopes,
-			});
+			writeAuthConfigFile(
+				{
+					oauth_token,
+					expiration_time,
+					refresh_token,
+					scopes,
+				},
+				profile
+			);
 			return true;
 		} catch (e) {
 			ctx.logger.debug(
@@ -248,15 +263,18 @@ export function createOAuthFlow(ctx: OAuthFlowContext): OAuthFlowAPI {
 			return true;
 		}
 		// TODO: ask permission before opening browser
-		const stored = readStoredAuthState({ warningLogger: ctx.logger });
+		const stored = readStoredAuthState({
+			warningLogger: ctx.logger,
+			profile: props.profile,
+		});
 		if (!stored.accessToken && !stored.deprecatedApiToken) {
 			// Not logged in.
 			// If we are not interactive, we cannot ask the user to login
 			return !ctx.isNonInteractiveOrCI() && (await login(props));
-		} else if (isRefreshNeeded()) {
+		} else if (isRefreshNeeded(props.profile)) {
 			// We're logged in, but the refresh token seems to have expired,
 			// so let's try to refresh it
-			const didRefresh = await refreshToken();
+			const didRefresh = await refreshToken(props.profile);
 			if (didRefresh) {
 				// The token was refreshed, so we're done here
 				return true;
@@ -269,7 +287,7 @@ export function createOAuthFlow(ctx: OAuthFlowContext): OAuthFlowAPI {
 		}
 	}
 
-	async function logout(): Promise<void> {
+	async function logout(profile?: string): Promise<void> {
 		if (ctx.hasEnvCredentials()) {
 			// Env credentials override any login details, so we cannot log out.
 			ctx.logger.log(
@@ -281,6 +299,7 @@ export function createOAuthFlow(ctx: OAuthFlowContext): OAuthFlowAPI {
 
 		const storedRefreshToken = readStoredAuthState({
 			warningLogger: ctx.logger,
+			profile,
 		}).refreshToken;
 		if (!storedRefreshToken) {
 			ctx.logger.log("Not logged in, exiting...");
@@ -300,14 +319,19 @@ export function createOAuthFlow(ctx: OAuthFlowContext): OAuthFlowAPI {
 			},
 		});
 		await response.text(); // blank text? would be nice if it was something meaningful
-		rmSync(getAuthConfigFilePath());
+		rmSync(getAuthConfigFilePath(profile));
 		ctx.logger.log(`Successfully logged out.`);
 		ctx.purgeOnLoginOrLogout?.();
 	}
 
-	async function getOAuthTokenFromLocalState(): Promise<string | undefined> {
+	async function getOAuthTokenFromLocalState(
+		profile?: string
+	): Promise<string | undefined> {
 		// Check if we have an OAuth token
-		let stored = readStoredAuthState({ warningLogger: ctx.logger });
+		let stored = readStoredAuthState({
+			warningLogger: ctx.logger,
+			profile,
+		});
 		if (!stored.accessToken) {
 			return undefined;
 		}
@@ -320,12 +344,15 @@ export function createOAuthFlow(ctx: OAuthFlowContext): OAuthFlowAPI {
 		const expired =
 			stored.accessToken && new Date() >= new Date(stored.accessToken.expiry);
 		if (expired) {
-			const didRefresh = await refreshToken();
+			const didRefresh = await refreshToken(profile);
 			if (!didRefresh) {
 				return undefined;
 			}
 			// Re-read after the refresh has persisted the new token to disk.
-			stored = readStoredAuthState({ warningLogger: ctx.logger });
+			stored = readStoredAuthState({
+				warningLogger: ctx.logger,
+				profile,
+			});
 		}
 
 		return stored.accessToken?.value;

@@ -71,6 +71,21 @@ export {
 } from "./pkce";
 export type { PKCECodes } from "./pkce";
 
+export {
+	activateProfileForDirectory,
+	deactivateDirectory,
+	deleteProfileFile,
+	getBindingsForProfile,
+	getProfileForDirectory,
+	listProfilePaths,
+	profileExists,
+	readDirectoryBindings,
+	removeAllBindingsForProfile,
+	resolveProfile,
+	validateProfileName,
+	writeDirectoryBindings,
+} from "./profiles";
+
 export { readStoredAuthState } from "./state";
 export type {
 	AccessToken,

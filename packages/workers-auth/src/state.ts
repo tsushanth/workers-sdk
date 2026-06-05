@@ -72,12 +72,13 @@ export function _resetDeprecatedV1ApiTokenWarningLatch(): void {
 export function readStoredAuthState(options?: {
 	configOverride?: UserAuthConfig;
 	warningLogger?: Pick<OAuthFlowLogger, "warn">;
+	profile?: string;
 }): StoredAuthState {
-	const { configOverride, warningLogger } = options ?? {};
+	const { configOverride, warningLogger, profile } = options ?? {};
 
 	let parsed: UserAuthConfig;
 	try {
-		parsed = configOverride ?? readAuthConfigFile();
+		parsed = configOverride ?? readAuthConfigFile(profile);
 	} catch {
 		return {};
 	}

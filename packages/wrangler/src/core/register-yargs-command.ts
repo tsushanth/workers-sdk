@@ -1,3 +1,4 @@
+import { resolveProfile } from "@cloudflare/workers-auth";
 import {
 	defaultWranglerConfig,
 	FatalError,
@@ -130,64 +131,10 @@ function createHandler(def: InternalCommandDefinition, argv: string[]) {
 		addBreadcrumb(def.command);
 
 		try {
-			const shouldPrintBanner = def.behaviour?.printBanner ?? true;
-			const bannerEnabled =
-				shouldPrintBanner === true ||
-				(typeof shouldPrintBanner === "function" &&
-					shouldPrintBanner(args) === true);
-
-			if (bannerEnabled) {
-				await printWranglerBanner();
-			}
-
-			if (!def.behaviour?.skipSkillsPrompt || args.installSkills) {
-				await maybeInstallCloudflareSkillsGlobally(args.installSkills);
-			}
-
-			if (!getWranglerHideBanner()) {
-				if (def.metadata.deprecated) {
-					logger.warn(def.metadata.deprecatedMessage);
-				}
-
-				// Suppress statusMessage when printBanner is a dynamic function that
-				// returned false (e.g. `--json` mode). When printBanner is the static
-				// boolean `false`, we preserve existing behaviour and still show
-				// status warnings — those commands opted out of the Wrangler banner,
-				// not necessarily the status message.
-				const statusMessageEnabled =
-					typeof shouldPrintBanner !== "function" || bannerEnabled;
-
-				if (statusMessageEnabled && def.metadata.statusMessage) {
-					logger.warn(def.metadata.statusMessage);
-				}
-			}
-
-			await def.validateArgs?.(args);
-
-			const shouldPrintResourceLocation =
-				typeof def.behaviour?.printResourceLocation === "function"
-					? def.behaviour?.printResourceLocation(args)
-					: def.behaviour?.printResourceLocation;
-			if (shouldPrintResourceLocation) {
-				// we don't have the type of args here :(
-				const remote =
-					"remote" in args && typeof args.remote === "boolean"
-						? args.remote
-						: undefined;
-				const local =
-					"local" in args && typeof args.local === "boolean"
-						? args.local
-						: undefined;
-				const resourceIsLocal = isLocal({ remote, local });
-				if (resourceIsLocal) {
-					printResourceLocation("local");
-					logger.log(
-						`Use --remote if you want to access the remote instance.\n`
-					);
-				} else {
-					printResourceLocation("remote");
-				}
-			}
+			const profile = resolveProfile({
+				profile: args.profile,
+				configPath: args.config,
+			});
 
 			const experimentalFlags = def.behaviour?.overrideExperimentalFlags
 				? def.behaviour?.overrideExperimentalFlags(args)
@@ -196,8 +143,69 @@ function createHandler(def: InternalCommandDefinition, argv: string[]) {
 						RESOURCES_PROVISION: args.experimentalProvision ?? false,
 						AUTOCREATE_RESOURCES: args.experimentalAutoCreate,
 					};
+			await run({ ...experimentalFlags, profile }, async () => {
+				const shouldPrintBanner = def.behaviour?.printBanner ?? true;
+				const bannerEnabled =
+					shouldPrintBanner === true ||
+					(typeof shouldPrintBanner === "function" &&
+						shouldPrintBanner(args) === true);
 
-			await run(experimentalFlags, async () => {
+				if (bannerEnabled) {
+					await printWranglerBanner(
+						true,
+						def.behaviour?.printActiveProfile ?? true
+					);
+				}
+
+				if (!def.behaviour?.skipSkillsPrompt || args.installSkills) {
+					await maybeInstallCloudflareSkillsGlobally(args.installSkills);
+				}
+
+				if (!getWranglerHideBanner()) {
+					if (def.metadata.deprecated) {
+						logger.warn(def.metadata.deprecatedMessage);
+					}
+
+					// Suppress statusMessage when printBanner is a dynamic function that
+					// returned false (e.g. `--json` mode). When printBanner is the static
+					// boolean `false`, we preserve existing behaviour and still show
+					// status warnings — those commands opted out of the Wrangler banner,
+					// not necessarily the status message.
+					const statusMessageEnabled =
+						typeof shouldPrintBanner !== "function" || bannerEnabled;
+
+					if (statusMessageEnabled && def.metadata.statusMessage) {
+						logger.warn(def.metadata.statusMessage);
+					}
+				}
+
+				await def.validateArgs?.(args);
+
+				const shouldPrintResourceLocation =
+					typeof def.behaviour?.printResourceLocation === "function"
+						? def.behaviour?.printResourceLocation(args)
+						: def.behaviour?.printResourceLocation;
+				if (shouldPrintResourceLocation) {
+					// we don't have the type of args here :(
+					const remote =
+						"remote" in args && typeof args.remote === "boolean"
+							? args.remote
+							: undefined;
+					const local =
+						"local" in args && typeof args.local === "boolean"
+							? args.local
+							: undefined;
+					const resourceIsLocal = isLocal({ remote, local });
+					if (resourceIsLocal) {
+						printResourceLocation("local");
+						logger.log(
+							`Use --remote if you want to access the remote instance.\n`
+						);
+					} else {
+						printResourceLocation("remote");
+					}
+				}
+
 				const config =
 					(def.behaviour?.provideConfig ?? true)
 						? readConfig(args, {

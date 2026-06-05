@@ -32,11 +32,26 @@ const USER_AUTH_CONFIG_PATH = "config";
  * The file lives under the global Wrangler config directory and is named
  * `default.toml` in production, or `<environment>.toml` for the staging /
  * other Cloudflare API environments.
+ *
+ * When a `profile` is provided, the file is named `<profile>.toml`. Non-default
+ * profiles ignore the staging environment suffix — they always use
+ * `<profile>.toml`.
  */
-export function getAuthConfigFilePath(): string {
-	const environment = getCloudflareApiEnvironmentFromEnv();
-	const filePath = `${USER_AUTH_CONFIG_PATH}/${environment === "production" ? "default.toml" : `${environment}.toml`}`;
-	return path.join(getGlobalWranglerConfigPath(), filePath);
+export function getAuthConfigFilePath(profile?: string): string {
+	const resolved = profile ?? "default";
+	let fileName: string;
+	if (resolved === "default") {
+		const environment = getCloudflareApiEnvironmentFromEnv();
+		fileName =
+			environment === "production" ? "default.toml" : `${environment}.toml`;
+	} else {
+		fileName = `${resolved}.toml`;
+	}
+	return path.join(
+		getGlobalWranglerConfigPath(),
+		USER_AUTH_CONFIG_PATH,
+		fileName
+	);
 }
 
 /**
@@ -46,8 +61,11 @@ export function getAuthConfigFilePath(): string {
  * site that needs it. Callers are responsible for any consumer-side cache
  * purging (e.g. via the {@link OAuthFlowContext.purgeOnLoginOrLogout} hook).
  */
-export function writeAuthConfigFile(config: UserAuthConfig): void {
-	const configPath = getAuthConfigFilePath();
+export function writeAuthConfigFile(
+	config: UserAuthConfig,
+	profile?: string
+): void {
+	const configPath = getAuthConfigFilePath(profile);
 
 	mkdirSync(path.dirname(configPath), {
 		recursive: true,
@@ -71,6 +89,8 @@ export function writeAuthConfigFile(config: UserAuthConfig): void {
  * @throws if the file does not exist or cannot be parsed as TOML. Callers
  * typically catch this and treat the failure as "not logged in via local OAuth".
  */
-export function readAuthConfigFile(): UserAuthConfig {
-	return parseTOML(readFileSync(getAuthConfigFilePath())) as UserAuthConfig;
+export function readAuthConfigFile(profile?: string): UserAuthConfig {
+	return parseTOML(
+		readFileSync(getAuthConfigFilePath(profile))
+	) as UserAuthConfig;
 }
