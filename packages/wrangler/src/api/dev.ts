@@ -2,7 +2,7 @@ import events from "node:events";
 import { getDockerPath } from "@cloudflare/workers-utils";
 import { fetch, Request } from "undici";
 import { startDev } from "../dev/start-dev";
-import { run } from "../experimental-flags";
+import { getProfile, run } from "../experimental-flags";
 import { logger } from "../logger";
 import type { StartDevOptions } from "../dev";
 import type { EnablePagesAssetsServiceBindingOptions } from "../miniflare-cli/types";
@@ -230,7 +230,7 @@ export async function unstable_dev(
 			MULTIWORKER: false,
 			RESOURCES_PROVISION: false,
 			AUTOCREATE_RESOURCES: false,
-			profile: "default",
+			profile: getProfile(),
 		},
 		() => startDev(devOptions)
 	);

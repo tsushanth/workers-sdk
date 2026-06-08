@@ -14,8 +14,8 @@ export function normalizeString(input: string): string {
 				replaceByte(
 					stripTrailingWhitespace(
 						stripStartupProfileHash(
-							normalizeSlashes(
-								normalizeCwd(
+							normalizeCwd(
+								normalizeSlashes(
 									normalizeTempDirs(stripTimings(replaceThinSpaces(input)))
 								)
 							)

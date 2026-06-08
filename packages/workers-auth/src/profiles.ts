@@ -99,11 +99,8 @@ export function deactivateDirectory(dir: string): {
 			bindings
 		);
 		if (parentBinding) {
-			const parentDir = Object.entries(bindings).find(
-				([, profile]) => profile === parentBinding
-			)?.[0];
 			throw new UserError(
-				`No profile is directly bound to "${normalizedDir}". The active profile "${parentBinding}" is bound at "${parentDir}". Run \`wrangler auth deactivate\` from that directory instead.`,
+				`No profile is directly bound to "${normalizedDir}". The active profile "${parentBinding.profile}" is bound at "${parentBinding.dir}". Run \`wrangler auth deactivate\` from that directory instead.`,
 				{ telemetryMessage: "auth deactivate wrong directory" }
 			);
 		}
@@ -121,14 +118,11 @@ export function deactivateDirectory(dir: string): {
 		bindings
 	);
 	if (fallbackProfile) {
-		const fallbackDir = Object.entries(bindings).find(
-			([, p]) => p === fallbackProfile
-		)?.[0];
 		return {
 			removedProfile: boundProfile,
 			newResolution: {
-				profile: fallbackProfile,
-				source: `inherited from ${fallbackDir}`,
+				profile: fallbackProfile.profile,
+				source: `inherited from ${fallbackProfile.dir}`,
 			},
 		};
 	}
@@ -154,7 +148,7 @@ export function deactivateDirectory(dir: string): {
 function getProfileForDirectoryFromBindings(
 	startDir: string,
 	bindings: Record<string, string>
-): string | undefined {
+): { profile: string; dir: string } | undefined {
 	const normalizedDir = path.resolve(startDir);
 
 	const sortedEntries = Object.entries(bindings).sort(
@@ -163,13 +157,13 @@ function getProfileForDirectoryFromBindings(
 
 	for (const [boundDir, profile] of sortedEntries) {
 		if (normalizedDir === boundDir) {
-			return profile;
+			return { profile, dir: boundDir };
 		}
 		if (
 			normalizedDir.startsWith(boundDir) &&
 			normalizedDir[boundDir.length] === path.sep
 		) {
-			return profile;
+			return { profile, dir: boundDir };
 		}
 	}
 
@@ -178,7 +172,7 @@ function getProfileForDirectoryFromBindings(
 
 export function getProfileForDirectory(startDir: string): string | undefined {
 	const bindings = readDirectoryBindings();
-	return getProfileForDirectoryFromBindings(startDir, bindings);
+	return getProfileForDirectoryFromBindings(startDir, bindings)?.profile;
 }
 
 export function getBindingsForProfile(profile: string): string[] {
