@@ -103,7 +103,7 @@ export function readStoredAuthState(options?: {
 			hasWarnedAboutDeprecatedV1ApiToken = true;
 			warningLogger.warn(
 				"It looks like you have used Wrangler v1's `config` command to login with an API token\n" +
-					`from ${configOverride === undefined ? getAuthConfigFilePath() : "in-memory config"}.\n` +
+					`from ${configOverride === undefined ? getAuthConfigFilePath(profile) : "in-memory config"}.\n` +
 					"This is no longer supported in the current version of Wrangler.\n" +
 					"If you wish to authenticate via an API token then please set the `CLOUDFLARE_API_TOKEN` environment variable."
 			);

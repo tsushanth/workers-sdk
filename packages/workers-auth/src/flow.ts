@@ -113,13 +113,13 @@ export interface OAuthFlowAPI {
 	 * present (per `ctx.hasEnvCredentials`), because the stored OAuth state is
 	 * not consulted in that case.
 	 */
-	isRefreshNeeded(): boolean;
+	isRefreshNeeded(profile?: string): boolean;
 
 	/**
 	 * Trigger an OAuth refresh-token rotation. Persists the new access/refresh
 	 * tokens to disk on success. Returns `false` on any failure.
 	 */
-	refreshToken(): Promise<boolean>;
+	refreshToken(profile?: string): Promise<boolean>;
 }
 
 /**

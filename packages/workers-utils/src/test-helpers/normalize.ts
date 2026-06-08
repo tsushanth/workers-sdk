@@ -65,9 +65,12 @@ function normalizeErrorMarkers(str: string): string {
  * Ensure slashes in the `str` are OS file-system agnostic.
  *
  * Use this in snapshot tests to be resilient to file-system differences.
+ * Also strips Windows drive letters (e.g., "C:/" → "/") so absolute paths
+ * like "C:/projects/foo" become "/projects/foo". The regex uses a negative
+ * lookbehind to avoid stripping URL schemes like "https://".
  */
 function normalizeSlashes(str: string): string {
-	return str.replace(/\\/g, "/");
+	return str.replace(/\\/g, "/").replace(/(?<![a-zA-Z])[A-Za-z]:\//g, "/");
 }
 
 /**

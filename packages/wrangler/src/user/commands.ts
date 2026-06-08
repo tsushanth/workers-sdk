@@ -66,6 +66,16 @@ export const loginCommand = createCommand({
 	args: {
 		...oauthArgs,
 	},
+	validateArgs(args) {
+		if (args.profile) {
+			throw new CommandLineArgsError(
+				"--profile cannot be used with the login command, as `wrangler login` is reserved for default, global auth. If you want to create or activate a named profile, run `wrangler auth create` or `wrangler auth activate`.",
+				{
+					telemetryMessage: "profile flag with login",
+				}
+			);
+		}
+	},
 	async handler(args, { config }) {
 		const activeProfile = getProfile();
 		if (activeProfile !== "default") {
@@ -124,6 +134,16 @@ export const logoutCommand = createCommand({
 		printConfigWarnings: false,
 		provideConfig: false,
 	},
+	validateArgs(args) {
+		if (args.profile) {
+			throw new CommandLineArgsError(
+				"--profile cannot be used with the logout command, as `wrangler logout` is reserved for default, global auth. If you want to delete or deactivate a named profile, run `wrangler auth delete` or `wrangler auth deactivate`.",
+				{
+					telemetryMessage: "profile flag with logout",
+				}
+			);
+		}
+	},
 	async handler() {
 		const activeProfile = getProfile();
 		if (activeProfile !== "default") {
@@ -159,6 +179,16 @@ export const whoamiCommand = createCommand({
 	behaviour: {
 		printBanner: (args) => !args.json,
 		printConfigWarnings: false,
+	},
+	validateArgs(args) {
+		if (args.profile) {
+			throw new CommandLineArgsError(
+				"--profile cannot be used with the whoami command as it only works on the currently active profile.",
+				{
+					telemetryMessage: "profile flag with whoami",
+				}
+			);
+		}
 	},
 	args: {
 		account: {

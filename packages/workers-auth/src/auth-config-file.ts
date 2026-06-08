@@ -5,6 +5,7 @@ import {
 	getGlobalWranglerConfigPath,
 	parseTOML,
 	readFileSync,
+	UserError,
 } from "@cloudflare/workers-utils";
 import TOML from "smol-toml";
 
@@ -38,6 +39,15 @@ const USER_AUTH_CONFIG_PATH = "config";
  * `<profile>.toml`.
  */
 export function getAuthConfigFilePath(profile?: string): string {
+	if (profile) {
+		if (!/^[a-zA-Z0-9_-]+$/.test(profile)) {
+			// always validate profile in order to prevent path traversa
+			throw new UserError(
+				`Invalid profile name "${profile}". Profile names may only contain alphanumeric characters, hyphens, and underscores.`,
+				{ telemetryMessage: "auth profile invalid name" }
+			);
+		}
+	}
 	const resolved = profile ?? "default";
 	let fileName: string;
 	if (resolved === "default") {

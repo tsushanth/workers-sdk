@@ -23,9 +23,10 @@ import { runWrangler } from "./helpers/run-wrangler";
 function createProfileFile(name: string) {
 	const configDir = path.join(getGlobalWranglerConfigPath(), "config");
 	mkdirSync(configDir, { recursive: true });
+	const futureDate = new Date(Date.now() + 100000 * 1000).toISOString();
 	writeFileSync(
 		path.join(configDir, `${name}.toml`),
-		'oauth_token = "test-token"\nrefresh_token = "test-refresh"\n'
+		`oauth_token = "test-token"\nrefresh_token = "test-refresh"\nexpiration_time = "${futureDate}"\n`
 	);
 }
 
@@ -115,6 +116,18 @@ describe("Profiles", () => {
 		it("--profile flag takes priority over directory binding", ({ expect }) => {
 			activateProfileForDirectory("dir-profile", process.cwd());
 			expect(resolveProfile({ profile: "flag-profile" })).toBe("flag-profile");
+		});
+
+		it("rejects invalid profile names from --profile flag", ({ expect }) => {
+			expect(() => resolveProfile({ profile: "../../../etc/passwd" })).toThrow(
+				/may only contain/
+			);
+			expect(() => resolveProfile({ profile: "my profile" })).toThrow(
+				/may only contain/
+			);
+			expect(() => resolveProfile({ profile: "default" })).toThrow(
+				/reserved profile name/
+			);
 		});
 	});
 
@@ -356,6 +369,60 @@ describe("Profiles", () => {
 				│ default │ - │
 				└─┴─┘"
 			`);
+		});
+	});
+
+	describe("wrangler auth token", () => {
+		it("outputs the token for the specified profile", async ({ expect }) => {
+			// Create a named profile with a valid token
+			createProfileFile("client-a");
+
+			await runWrangler("auth token --profile client-a");
+
+			expect(std.out).toContain("test-token");
+		});
+
+		it("outputs the default profile token when no --profile is specified", async ({
+			expect,
+		}) => {
+			// Create both default and named profiles
+			createProfileFile("default");
+			createProfileFile("client-a");
+
+			await runWrangler("auth token");
+
+			// Should read from default profile, not client-a
+			expect(std.out).toContain("test-token");
+		});
+
+		it("respects directory-bound profile for auth token", async ({
+			expect,
+		}) => {
+			// Create profiles
+			createProfileFile("default");
+			createProfileFile("bound-profile");
+
+			// Bind a profile to cwd
+			activateProfileForDirectory("bound-profile", process.cwd());
+
+			await runWrangler("auth token");
+
+			// Should read from the directory-bound profile
+			expect(std.out).toContain("test-token");
+		});
+
+		it("--profile flag overrides directory binding", async ({ expect }) => {
+			// Create profiles
+			createProfileFile("bound-profile");
+			createProfileFile("flag-profile");
+
+			// Bind a profile to cwd
+			activateProfileForDirectory("bound-profile", process.cwd());
+
+			await runWrangler("auth token --profile flag-profile");
+
+			// Should read from flag-profile, not bound-profile
+			expect(std.out).toContain("test-token");
 		});
 	});
 

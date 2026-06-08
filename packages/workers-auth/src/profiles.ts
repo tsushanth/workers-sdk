@@ -216,6 +216,7 @@ export function resolveProfile(args: {
 	configPath?: string | string[];
 }): string {
 	if (args.profile) {
+		validateProfileName(args.profile);
 		return args.profile;
 	}
 
