@@ -16,7 +16,7 @@ const server = createTestHarness({
 const webWorker = server.getWorker("web-worker");
 const apiWorker = server.getWorker("api-worker");
 
-// createTestHarness's route Workers outbound fetches to globalThis.fetch().
+// Workers started by createTestHarness route outbound fetches to globalThis.fetch().
 // You can use libraries like MSW to intercept those requests.
 const mock = setupServer();
 
