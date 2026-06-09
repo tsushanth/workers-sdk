@@ -1,5 +1,15 @@
 # wrangler
 
+## 4.99.1
+
+### Patch Changes
+
+- [#14230](https://github.com/cloudflare/workers-sdk/pull/14230) [`41f75c0`](https://github.com/cloudflare/workers-sdk/commit/41f75c0b2ba3f0f4a88ca792c1b5c8914374d61d) Thanks [@dario-piotrowicz](https://github.com/dario-piotrowicz)! - Improve D1 error messages for missing or conflicting options
+
+  Error messages for `d1 execute`, `d1 export`, `d1 time-travel restore`, and `d1 insights` now clearly state which option is missing or conflicting, explain why the combination is invalid, and suggest how to fix the issue.
+
+  Additionally, duration validation errors in `d1 insights` are now thrown as `UserError` instead of plain `Error`, ensuring they are displayed cleanly to users rather than as unexpected crashes.
+
 ## 4.99.0
 
 ### Minor Changes
