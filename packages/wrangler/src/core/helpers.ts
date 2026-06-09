@@ -14,20 +14,27 @@ import type {
 export function demandOneOfOption(...options: string[]) {
 	return function (argv: { [key: string]: unknown }) {
 		const count = options.filter((option) => argv[option]).length;
-		const lastOption = options.pop();
+		const flags = options.map((o) => `--${o}`);
+		const flagList =
+			flags.length > 1
+				? `${flags.slice(0, -1).join(", ")} and ${flags[flags.length - 1]}`
+				: flags[0];
 
 		if (count === 0) {
 			throw new CommandLineArgsError(
-				`Exactly one of the arguments ${options.join(
-					", "
-				)} and ${lastOption} is required`,
+				`Missing required option: exactly one of ${flagList} must be provided`,
 				{ telemetryMessage: "core arguments missing exclusive option" }
 			);
 		} else if (count > 1) {
+			const provided = options
+				.filter((option) => argv[option])
+				.map((o) => `--${o}`);
+			const providedList =
+				provided.length > 1
+					? `${provided.slice(0, -1).join(", ")} and ${provided[provided.length - 1]}`
+					: provided[0];
 			throw new CommandLineArgsError(
-				`Arguments ${options.join(
-					", "
-				)} and ${lastOption} are mutually exclusive`,
+				`Conflicting options: ${providedList} cannot be used together. Please provide only one.`,
 				{ telemetryMessage: "core arguments mutually exclusive options" }
 			);
 		}
